@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SimpleShare — Live Progress</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 36px; max-width:720px; margin:auto; }
+    input { width: 70%; padding:10px; font-size:16px; }
+    button { padding:10px 14px; margin-left:8px; font-size:16px; cursor:pointer; }
+    .card { border:1px solid #eee; padding:16px; border-radius:8px; margin-top:16px; }
+    .progress { background:#f1f1f1; height:12px; border-radius:6px; overflow:hidden; margin-top:8px; }
+    .bar { height:100%; width:0%; transition:width 300ms ease; background:linear-gradient(90deg,#4caf50,#8bc34a); }
+    .status { margin-top:8px; font-weight:600; }
+    video { display:block; margin-top:12px; max-width:100%; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <h1>🎬 SimpleShare</h1>
+  <p>Paste a YouTube/Instagram/Facebook video link below and watch live progress.</p>
+
+  <input id="url" placeholder="Paste video URL..." />
+  <button id="start">Convert</button>
+
+  <div id="jobs"></div>
+
+  <script>
+    const jobsEl = document.getElementById('jobs');
+
+    document.getElementById('start').onclick = async () => {
+      const url = document.getElementById('url').value.trim();
+      if (!url) { alert('Please paste a URL'); return; }
+
+      // create job
+      const createResp = await fetch('/convert', {
+        method: 'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body: 'url=' + encodeURIComponent(url)
+      });
+      const createJson = await createResp.json();
+      if (!createResp.ok) { alert('Create job failed: ' + JSON.stringify(createJson)); return; }
+
+      const jobId = createJson.jobId;
+      const statusUrl = createJson.statusUrl || `/status/${jobId}`;
+
+      // create UI card
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <div><strong>Job:</strong> ${jobId}</div>
+        <div class="status" id="status-${jobId}">Queued</div>
+        <div class="progress"><div id="bar-${jobId}" class="bar"></div></div>
+        <div id="msg-${jobId}"></div>
+      `;
+      jobsEl.prepend(card);
+
+      // open SSE
+      const evt = new EventSource(statusUrl);
+      evt.onmessage = (e) => {
+        // default message event - initial state or fallback
+        try {
+          const d = JSON.parse(e.data);
+          document.getElementById(`status-${jobId}`).innerText = d.status || '...';
+          const pct = d.progress || 0;
+          document.getElementById(`bar-${jobId}`).style.width = pct + '%';
+          if (d.url) showResult(jobId, d.url);
+          if (d.error) showError(jobId, d.error);
+        } catch (err) {}
+      };
+
+      // custom events
+      evt.addEventListener('download-progress', (ev) => {
+        const d = JSON.parse(ev.data);
+        document.getElementById(`status-${jobId}`).innerText = 'Downloading...';
+        const pct = d.progress || 0;
+        document.getElementById(`bar-${jobId}`).style.width = pct + '%';
+      });
+
+      evt.addEventListener('convert-progress', (ev) => {
+        const d = JSON.parse(ev.data);
+        document.getElementById(`status-${jobId}`).innerText = 'Converting...';
+        const pct = d.progress || 0;
+        document.getElementById(`bar-${jobId}`).style.width = pct + '%';
+      });
+
+      evt.addEventListener('update', (ev) => {
+        const d = JSON.parse(ev.data);
+        document.getElementById(`status-${jobId}`).innerText = d.status || '...';
+      });
+
+      evt.addEventListener('done', (ev) => {
+        const d = JSON.parse(ev.data);
+        document.getElementById(`status-${jobId}`).innerText = 'Done ✅';
+        document.getElementById(`bar-${jobId}`).style.width = '100%';
+        if (d.url) showResult(jobId, d.url);
+        evt.close();
+      });
+
+      evt.addEventListener('error', (ev) => {
+        const d = JSON.parse(ev.data);
+        showError(jobId, d.error || 'Unknown error');
+        evt.close();
+      });
+
+      evt.onerror = (e) => {
+        // network errors or closed connection
+        // we'll keep UI but note the SSE closed
+        console.log('SSE connection error', e);
+      };
+
+      function showResult(jobId, url) {
+        const msg = document.getElementById(`msg-${jobId}`);
+        msg.innerHTML = `
+          <div><a href="${url}" target="_blank">Open video</a></div>
+          <video controls src="${url}"></video>
+          <div style="margin-top:8px;">
+            <button onclick="navigator.share ? navigator.share({text:'Watch this video: '+url}) : window.open('https://api.whatsapp.com/send?text=' + encodeURIComponent('Watch this video: '+url),'_blank')">
+              Share to WhatsApp
+            </button>
+          </div>
+        `;
+      }
+
+      function showError(jobId, text) {
+        document.getElementById(`status-${jobId}`).innerText = 'Error ❌';
+        const msg = document.getElementById(`msg-${jobId}`);
+        msg.innerHTML = `<div style="color:#b00">Error: ${text}</div>`;
+      }
+    };
+  </script>
+</body>
+</html>
